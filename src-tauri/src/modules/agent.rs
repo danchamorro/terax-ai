@@ -238,6 +238,17 @@ fn write_atomic(path: &std::path::Path, contents: &str) -> Result<(), String> {
     })
 }
 
+fn pi_extension_write_path(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            std::fs::canonicalize(path).map_err(|e| format!("resolve {}: {e}", path.display()))
+        }
+        Ok(_) => Ok(path.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(e) => Err(format!("inspect {}: {e}", path.display())),
+    }
+}
+
 fn enable_pi_extension_at(path: &std::path::Path) -> Result<(), String> {
     let dir = path.parent().unwrap();
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -247,7 +258,8 @@ fn enable_pi_extension_at(path: &std::path::Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(format!("read {}: {e}", path.display())),
     };
-    write_atomic(path, pi_extension_contents(existing.as_deref(), path)?)
+    let contents = pi_extension_contents(existing.as_deref(), path)?;
+    write_atomic(&pi_extension_write_path(path)?, contents)
 }
 
 fn enable_pi_extension() -> Result<(), String> {
@@ -441,6 +453,30 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "export const mine = true;"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pi_extension_install_preserves_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir =
+            std::env::temp_dir().join(format!("terax-pi-extension-symlink-{}", std::process::id()));
+        let target = dir.join("managed.ts");
+        let path = dir.join(PI_EXTENSION_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&target, format!("// {PI_EXTENSION_MARKER}\n")).unwrap();
+        symlink(&target, &path).unwrap();
+
+        enable_pi_extension_at(&path).unwrap();
+
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), PI_EXTENSION);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
